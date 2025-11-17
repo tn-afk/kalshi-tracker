@@ -29,17 +29,16 @@ def get_access_token():
 
     # Create credentials object
     creds = Credentials(
-        token=GOOGLE_TOKEN,
+        token=None,  # Start with no token to force refresh
         refresh_token=GOOGLE_REFRESH_TOKEN,
         token_uri='https://oauth2.googleapis.com/token',
         client_id=GOOGLE_CLIENT_ID,
         client_secret=GOOGLE_CLIENT_SECRET
     )
 
-    # Refresh if needed
-    if not creds.valid:
-        from google.auth.transport.requests import Request
-        creds.refresh(Request())
+    # Always refresh to get a fresh token
+    from google.auth.transport.requests import Request
+    creds.refresh(Request())
 
     return creds.token
 
