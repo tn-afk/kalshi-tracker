@@ -49,13 +49,22 @@ def check_and_download_new_data(date_str):
     print(f"Checking for data on {date_str}...", flush=True)
 
     try:
-        response = requests.get(json_url, timeout=300)
+        # Use streaming download with shorter timeout
+        response = requests.get(json_url, timeout=120, stream=True)
         if response.status_code == 200:
-            print(f"✓ Downloaded data for {date_str}", flush=True)
-            return response.json()
+            print(f"✓ Downloading data for {date_str}...", flush=True)
+            # Download in chunks
+            content = b''
+            for chunk in response.iter_content(chunk_size=8192):
+                content += chunk
+            print(f"✓ Processing data for {date_str}...", flush=True)
+            return json.loads(content)
         else:
             print(f"✗ No data available for {date_str} (HTTP {response.status_code})", flush=True)
             return None
+    except requests.exceptions.Timeout:
+        print(f"✗ Timeout downloading {date_str}", flush=True)
+        return None
     except Exception as e:
         print(f"✗ Error downloading {date_str}: {e}", flush=True)
         return None
@@ -121,11 +130,15 @@ def main():
         all_results = []
         latest_date = datetime(2025, 11, 8)  # Start from Nov 8
 
-    # Check for new dates (up to 7 days ahead to catch up if script wasn't run)
+    # Check for new dates (up to 10 days ahead to catch up if script wasn't run)
     new_data_found = []
-    for i in range(1, 8):
+    for i in range(1, 11):
         check_date = latest_date + timedelta(days=i)
         date_str = check_date.strftime('%Y-%m-%d')
+
+        # Don't check dates in the future
+        if check_date > datetime.now():
+            break
 
         data = check_and_download_new_data(date_str)
         if data:
