@@ -127,8 +127,26 @@ def main():
             all_results = json.load(f)
         latest_date = datetime.strptime(all_results[0]['date'], '%Y-%m-%d')
     else:
+        # Check Google Sheet for latest date
         all_results = []
-        latest_date = datetime(2025, 11, 8)  # Start from Nov 8
+        try:
+            print("Checking Google Sheet for latest date...", flush=True)
+            token = get_access_token()
+            url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Kalshi Data!A:A'
+            headers = {'Authorization': f'Bearer {token}'}
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            dates = response.json().get('values', [])
+            if len(dates) > 1:  # Skip header row
+                latest_date_str = dates[-1][0]  # Last row (newest date at bottom)
+                latest_date = datetime.strptime(latest_date_str, '%Y-%m-%d')
+                print(f"Latest date in sheet: {latest_date_str}", flush=True)
+            else:
+                latest_date = datetime(2025, 11, 13)  # Fallback to Nov 13
+                print(f"No data in sheet, starting from {latest_date.strftime('%Y-%m-%d')}", flush=True)
+        except Exception as e:
+            print(f"Error reading sheet: {e}, using fallback date", flush=True)
+            latest_date = datetime(2025, 11, 13)  # Fallback to Nov 13
 
     # Check for new dates (up to 10 days ahead to catch up if script wasn't run)
     new_data_found = []
