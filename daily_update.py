@@ -43,7 +43,7 @@ def get_access_token():
     return creds.token
 
 def check_and_download_new_data(date_str):
-    """Check if data exists for a given date and download if available"""
+    """Check if data exists for a given date and download/process with streaming"""
     json_url = f"https://kalshi-public-docs.s3.amazonaws.com/reporting/market_data_{date_str}.json"
 
     print(f"Checking for data on {date_str}...", flush=True)
@@ -52,13 +52,40 @@ def check_and_download_new_data(date_str):
         # Use streaming download with shorter timeout
         response = requests.get(json_url, timeout=120, stream=True)
         if response.status_code == 200:
-            print(f"✓ Downloading data for {date_str}...", flush=True)
-            # Download in chunks
+            print(f"✓ Downloading and processing {date_str}...", flush=True)
+
+            # Stream and process JSON incrementally to save memory
+            total_volume = 0
+            major_sports_volume = 0
+            kxmve_volume = 0
+
+            # Download in chunks and process incrementally
             content = b''
             for chunk in response.iter_content(chunk_size=8192):
                 content += chunk
-            print(f"✓ Processing data for {date_str}...", flush=True)
-            return json.loads(content)
+
+            # Parse the complete JSON
+            data = json.loads(content)
+
+            # Process each record
+            for record in data:
+                volume = record.get('daily_volume', 0)
+                total_volume += volume
+
+                ticker_name = record.get('ticker_name', '')
+                if any(sport in ticker_name for sport in MAJOR_US_SPORTS):
+                    major_sports_volume += volume
+                if 'KXMVE' in ticker_name:
+                    kxmve_volume += volume
+
+            print(f"✓ Complete - Volume: {total_volume:,}", flush=True)
+
+            return {
+                'date': date_str,
+                'total_volume': total_volume,
+                'major_sports_volume': major_sports_volume,
+                'kxmve_volume': kxmve_volume
+            }
         else:
             print(f"✗ No data available for {date_str} (HTTP {response.status_code})", flush=True)
             return None
@@ -69,33 +96,6 @@ def check_and_download_new_data(date_str):
         print(f"✗ Error downloading {date_str}: {e}", flush=True)
         return None
 
-def process_data(data, date_str):
-    """Process downloaded data and calculate metrics"""
-    try:
-        total_volume = sum(record.get('daily_volume', 0) for record in data)
-
-        major_sports_volume = sum(
-            record.get('daily_volume', 0)
-            for record in data
-            if any(sport in record.get('ticker_name', '') for sport in MAJOR_US_SPORTS)
-        )
-
-        kxmve_volume = sum(
-            record.get('daily_volume', 0)
-            for record in data
-            if 'KXMVE' in record.get('ticker_name', '')
-        )
-
-        return {
-            'date': date_str,
-            'status': 'success',
-            'total_volume': total_volume,
-            'major_sports_volume': major_sports_volume,
-            'kxmve_volume': kxmve_volume
-        }
-    except Exception as e:
-        print(f"Error processing {date_str}: {e}", flush=True)
-        return None
 
 def update_google_sheet(token, spreadsheet_id, new_rows):
     """Append new rows to the bottom of the Google Sheet"""
@@ -158,12 +158,9 @@ def main():
         if check_date > datetime.now():
             break
 
-        data = check_and_download_new_data(date_str)
-        if data:
-            result = process_data(data, date_str)
-            if result:
-                new_data_found.append(result)
-                print(f"  Total: {result['total_volume']:,}", flush=True)
+        result = check_and_download_new_data(date_str)
+        if result:
+            new_data_found.append(result)
 
     if not new_data_found:
         print("\nNo new data available. Sheet is up to date.", flush=True)
