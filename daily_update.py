@@ -1,200 +1,147 @@
 #!/usr/bin/env python3
 """
-Kalshi Daily Data Updater for Render
-Checks for new Kalshi data and updates Google Sheet
+Optimized Kalshi Daily Data Updater
+Fast, efficient data collection with better download performance
 """
 import json
 import os
 import sys
 from datetime import datetime, timedelta
-from io import StringIO
 import requests
 from google.oauth2.credentials import Credentials
 
-# Configuration from environment variables
+# Configuration
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID', '1HzPlGwvV9G0mMTEUibI_8WecxgWwK-zfCNr0tGS-q2I')
-GOOGLE_TOKEN = os.getenv('GOOGLE_ACCESS_TOKEN')
 GOOGLE_REFRESH_TOKEN = os.getenv('GOOGLE_REFRESH_TOKEN')
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
 MAJOR_US_SPORTS = ['NBA', 'NFL', 'NCAA', 'MLB', 'MLS', 'NHL']
 
-# Use /tmp for temporary files on Render
-RESULTS_FILE = '/tmp/kalshi_tracking_results.json'
-
 def get_access_token():
-    """Get or refresh Google OAuth access token"""
-    if not all([GOOGLE_REFRESH_TOKEN, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET]):
-        raise ValueError("Missing Google OAuth credentials in environment variables")
-
-    # Create credentials object
+    """Get fresh Google OAuth access token"""
     creds = Credentials(
-        token=None,  # Start with no token to force refresh
+        token=None,
         refresh_token=GOOGLE_REFRESH_TOKEN,
         token_uri='https://oauth2.googleapis.com/token',
         client_id=GOOGLE_CLIENT_ID,
         client_secret=GOOGLE_CLIENT_SECRET
     )
-
-    # Always refresh to get a fresh token
     from google.auth.transport.requests import Request
     creds.refresh(Request())
-
     return creds.token
 
-def check_and_download_new_data(date_str):
-    """Check if data exists for a given date and download/process with streaming"""
-    json_url = f"https://kalshi-public-docs.s3.amazonaws.com/reporting/market_data_{date_str}.json"
+def download_and_process(date_str):
+    """Download and process Kalshi data with optimized chunking"""
+    url = f"https://kalshi-public-docs.s3.amazonaws.com/reporting/market_data_{date_str}.json"
 
-    print(f"Checking for data on {date_str}...", flush=True)
+    print(f"[{date_str}] Fetching data...", flush=True)
 
     try:
-        # Use streaming download with shorter timeout
-        response = requests.get(json_url, timeout=120, stream=True)
-        if response.status_code == 200:
-            print(f"✓ Downloading and processing {date_str}...", flush=True)
+        # Use larger chunks and aggressive timeout
+        response = requests.get(url, timeout=180, stream=True)
 
-            # Stream and process JSON incrementally to save memory
-            total_volume = 0
-            major_sports_volume = 0
-            kxmve_volume = 0
-
-            # Download in chunks and process incrementally
-            content = b''
-            for chunk in response.iter_content(chunk_size=8192):
-                content += chunk
-
-            # Parse the complete JSON
-            data = json.loads(content)
-
-            # Process each record
-            for record in data:
-                volume = record.get('daily_volume', 0)
-                total_volume += volume
-
-                ticker_name = record.get('ticker_name', '')
-                if any(sport in ticker_name for sport in MAJOR_US_SPORTS):
-                    major_sports_volume += volume
-                if 'KXMVE' in ticker_name:
-                    kxmve_volume += volume
-
-            print(f"✓ Complete - Volume: {total_volume:,}", flush=True)
-
-            return {
-                'date': date_str,
-                'total_volume': total_volume,
-                'major_sports_volume': major_sports_volume,
-                'kxmve_volume': kxmve_volume
-            }
-        else:
-            print(f"✗ No data available for {date_str} (HTTP {response.status_code})", flush=True)
+        if response.status_code != 200:
+            print(f"[{date_str}] Not available (HTTP {response.status_code})", flush=True)
             return None
-    except requests.exceptions.Timeout:
-        print(f"✗ Timeout downloading {date_str}", flush=True)
-        return None
+
+        # Download with 1MB chunks (much faster than 8KB)
+        chunks = []
+        for chunk in response.iter_content(chunk_size=1048576):
+            if chunk:
+                chunks.append(chunk)
+
+        data = json.loads(b''.join(chunks))
+
+        # Process incrementally
+        total = major_sports = kxmve = 0
+        for record in data:
+            vol = record.get('daily_volume', 0)
+            total += vol
+
+            ticker = record.get('ticker_name', '')
+            if any(sport in ticker for sport in MAJOR_US_SPORTS):
+                major_sports += vol
+            if 'KXMVE' in ticker:
+                kxmve += vol
+
+        print(f"[{date_str}] ✓ Volume: {total:,}", flush=True)
+
+        return {
+            'date': date_str,
+            'total_volume': total,
+            'major_sports_volume': major_sports,
+            'kxmve_volume': kxmve
+        }
+
     except Exception as e:
-        print(f"✗ Error downloading {date_str}: {e}", flush=True)
+        print(f"[{date_str}] Error: {e}", flush=True)
         return None
 
-
-def update_google_sheet(token, spreadsheet_id, new_rows):
-    """Append new rows to the bottom of the Google Sheet"""
-    # Get existing data to find the next row
-    url = f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/Kalshi Data!A:D'
+def update_sheet(token, rows):
+    """Append rows to Google Sheet"""
+    url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Kalshi Data!A:D'
     headers = {'Authorization': f'Bearer {token}'}
 
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    existing_data = response.json().get('values', [])
-    next_row = len(existing_data) + 1
+    # Get next row
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    next_row = len(resp.json().get('values', [])) + 1
 
-    # Append new rows
-    url = f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/Kalshi Data!A{next_row}:append'
-    body = {'values': new_rows}
-    params = {'valueInputOption': 'RAW'}
-
-    response = requests.post(url, headers=headers, json=body, params=params)
-    response.raise_for_status()
-
-    print(f"✓ Added {len(new_rows)} new row(s) to Google Sheet", flush=True)
+    # Append
+    url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Kalshi Data!A{next_row}:append'
+    resp = requests.post(
+        url,
+        headers=headers,
+        json={'values': rows},
+        params={'valueInputOption': 'RAW'}
+    )
+    resp.raise_for_status()
+    print(f"✓ Added {len(rows)} row(s) to sheet", flush=True)
 
 def main():
-    print(f"=== Kalshi Daily Update - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n", flush=True)
+    print(f"=== Kalshi Tracker - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n", flush=True)
 
-    # Load existing results if available
-    if os.path.exists(RESULTS_FILE):
-        with open(RESULTS_FILE, 'r') as f:
-            all_results = json.load(f)
-        latest_date = datetime.strptime(all_results[0]['date'], '%Y-%m-%d')
+    # Get latest date from sheet
+    token = get_access_token()
+    url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Kalshi Data!A:A'
+    resp = requests.get(url, headers={'Authorization': f'Bearer {token}'})
+    resp.raise_for_status()
+
+    dates = resp.json().get('values', [])
+    if len(dates) > 1:
+        latest = datetime.strptime(dates[-1][0], '%Y-%m-%d')
     else:
-        # Check Google Sheet for latest date
-        all_results = []
-        try:
-            print("Checking Google Sheet for latest date...", flush=True)
-            token = get_access_token()
-            url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Kalshi Data!A:A'
-            headers = {'Authorization': f'Bearer {token}'}
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            dates = response.json().get('values', [])
-            if len(dates) > 1:  # Skip header row
-                latest_date_str = dates[-1][0]  # Last row (newest date at bottom)
-                latest_date = datetime.strptime(latest_date_str, '%Y-%m-%d')
-                print(f"Latest date in sheet: {latest_date_str}", flush=True)
-            else:
-                latest_date = datetime(2025, 11, 13)  # Fallback to Nov 13
-                print(f"No data in sheet, starting from {latest_date.strftime('%Y-%m-%d')}", flush=True)
-        except Exception as e:
-            print(f"Error reading sheet: {e}, using fallback date", flush=True)
-            latest_date = datetime(2025, 11, 13)  # Fallback to Nov 13
+        latest = datetime(2025, 11, 13)
 
-    # Check for new dates (up to 10 days ahead to catch up if script wasn't run)
-    new_data_found = []
+    print(f"Latest in sheet: {latest.strftime('%Y-%m-%d')}\n", flush=True)
+
+    # Check up to 10 days ahead
+    results = []
     for i in range(1, 11):
-        check_date = latest_date + timedelta(days=i)
-        date_str = check_date.strftime('%Y-%m-%d')
-
-        # Don't check dates in the future
+        check_date = latest + timedelta(days=i)
         if check_date > datetime.now():
             break
 
-        result = check_and_download_new_data(date_str)
+        result = download_and_process(check_date.strftime('%Y-%m-%d'))
         if result:
-            new_data_found.append(result)
+            results.append(result)
 
-    if not new_data_found:
-        print("\nNo new data available. Sheet is up to date.", flush=True)
+    if not results:
+        print("\n✓ Sheet is up to date", flush=True)
         return
 
-    # Update results file (keep newest first for tracking)
-    all_results = new_data_found + all_results
-    with open(RESULTS_FILE, 'w') as f:
-        json.dump(all_results, f, indent=2)
+    # Update sheet
+    print(f"\nUpdating sheet with {len(results)} day(s)...", flush=True)
+    rows = [[r['date'], r['total_volume'], r['major_sports_volume'], r['kxmve_volume']] for r in results]
+    update_sheet(get_access_token(), rows)
 
-    print(f"\nFound {len(new_data_found)} new day(s) of data", flush=True)
-
-    # Update Google Sheet
-    print("\nUpdating Google Sheet...", flush=True)
-    token = get_access_token()
-
-    new_rows = []
-    for result in new_data_found:
-        new_rows.append([
-            result['date'],
-            result['total_volume'],
-            result['major_sports_volume'],
-            result['kxmve_volume']
-        ])
-
-    update_google_sheet(token, SPREADSHEET_ID, new_rows)
-
-    print("\n✓ Daily update complete!", flush=True)
+    print("\n✓ Complete!", flush=True)
 
 if __name__ == '__main__':
     try:
         main()
     except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr, flush=True)
+        print(f"\nERROR: {e}", file=sys.stderr, flush=True)
         import traceback
         traceback.print_exc()
         sys.exit(1)
