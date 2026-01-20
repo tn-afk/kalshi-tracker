@@ -13,7 +13,8 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
 # Configuration from environment variables
-SPREADSHEET_ID = os.getenv('FOOTBALL_F1_SPREADSHEET_ID', '1l4Mp4bUiHf_aa93BRI09NE-mVKbNlkILBsWCI6cXp04')
+SPREADSHEET_ID = os.getenv('SPREADSHEET_ID', '1HzPlGwvV9G0mMTEUibI_8WecxgWwK-zfCNr0tGS-q2I')
+SHEET_NAME = 'Football & F1'
 GOOGLE_REFRESH_TOKEN = os.getenv('GOOGLE_REFRESH_TOKEN')
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
@@ -93,7 +94,7 @@ def process_date(date_str):
 
 def update_google_sheet(token, rows):
     """Append rows to Google Sheet"""
-    url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Data!A:B'
+    url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Football & F1!A:B'
     headers = {'Authorization': f'Bearer {token}'}
 
     response = requests.get(url, headers=headers)
@@ -101,7 +102,7 @@ def update_google_sheet(token, rows):
     existing = response.json().get('values', [])
     next_row = len(existing) + 1
 
-    url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Data!A{next_row}:append'
+    url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Football & F1!A{next_row}:append'
     body = {'values': [[r['date'], r['volume']] for r in rows]}
     params = {'valueInputOption': 'RAW'}
 
@@ -118,7 +119,7 @@ def main():
     try:
         print("Checking Google Sheet for latest date...", flush=True)
         token = get_access_token()
-        url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Data!A:A'
+        url = f'https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}/values/Football & F1!A:A'
         headers = {'Authorization': f'Bearer {token}'}
         response = requests.get(url, headers=headers)
         response.raise_for_status()
