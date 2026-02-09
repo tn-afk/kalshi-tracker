@@ -18,6 +18,7 @@ GOOGLE_REFRESH_TOKEN = os.getenv('GOOGLE_REFRESH_TOKEN')
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
 MAJOR_US_SPORTS = ['NBA', 'NFL', 'NCAA', 'MLB', 'MLS', 'NHL']
+SB_GAME_TICKERS = ['KXSB', 'KXNFCAFCSB', 'KXTEAMSINSB', 'KXNFLSBMVP', 'KXNFLSBMVPPOS', 'KXSBVIEWER']
 
 # Use /tmp for temporary files on Render
 RESULTS_FILE = '/tmp/kalshi_tracking_results.json'
@@ -67,13 +68,18 @@ def check_and_download_new_data(date_str):
             kxmve_mask = df['report_ticker'].str.contains('KXMVE', na=False)
             kxmve_volume = df.loc[kxmve_mask, 'daily_volume'].sum()
 
+            # Calculate Super Bowl game-related volume
+            sb_mask = df['report_ticker'].isin(SB_GAME_TICKERS)
+            sb_volume = df.loc[sb_mask, 'daily_volume'].sum()
+
             print(f"✓ Complete - Volume: {total_volume:,}", flush=True)
 
             return {
                 'date': date_str,
                 'total_volume': int(total_volume),
                 'major_sports_volume': int(major_sports_volume),
-                'kxmve_volume': int(kxmve_volume)
+                'kxmve_volume': int(kxmve_volume),
+                'sb_volume': int(sb_volume)
             }
         else:
             print(f"✗ No data available for {date_str} (HTTP {response.status_code})", flush=True)
@@ -89,7 +95,7 @@ def check_and_download_new_data(date_str):
 def update_google_sheet(token, spreadsheet_id, new_rows):
     """Append new rows to the bottom of the Google Sheet"""
     # Get existing data to find the next row
-    url = f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/Kalshi Data!A:D'
+    url = f'https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/Kalshi Data!A:E'
     headers = {'Authorization': f'Bearer {token}'}
 
     response = requests.get(url, headers=headers)
@@ -172,7 +178,8 @@ def main():
             result['date'],
             result['total_volume'],
             result['major_sports_volume'],
-            result['kxmve_volume']
+            result['kxmve_volume'],
+            result['sb_volume']
         ])
 
     update_google_sheet(token, SPREADSHEET_ID, new_rows)
