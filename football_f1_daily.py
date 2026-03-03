@@ -2,13 +2,14 @@
 """
 Kalshi Football & F1 Daily Tracker for Render
 Checks for new Kalshi data and updates Google Sheet
+Uses streaming JSON parsing to stay within 512MB memory limit
 """
-import json
 import os
 import sys
 import gc
 from datetime import datetime, timedelta
 import requests
+import ijson
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
@@ -23,7 +24,6 @@ GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
 FILTERS = ['KXUCL', 'KXMLS', 'KXEPL', 'KXLALIGA', 'KXBUNDESLIGA', 'KXSERIEA',
            'KXLIGUE1', 'KXUEL', 'KXUEFA', 'KXCLUBWC', 'KXFACUP', 'KXEFLCUP', 'KXF1']
 
-# Use /tmp for temp files
 TEMP_FILE = '/tmp/kalshi_football_temp.json'
 
 
@@ -44,13 +44,13 @@ def get_access_token():
 
 
 def process_date(date_str):
-    """Download, process, and clean up data for one date"""
+    """Download and process data for one date using streaming JSON parsing"""
     url = f"https://kalshi-public-docs.s3.amazonaws.com/reporting/market_data_{date_str}.json"
 
     print(f"[{date_str}] Checking... ", end='', flush=True)
 
     try:
-        # Download to temp file
+        # Download to temp file (streaming to avoid memory spike)
         response = requests.get(url, timeout=300, stream=True)
         if response.status_code != 200:
             print(f"No data (HTTP {response.status_code})")
@@ -60,22 +60,21 @@ def process_date(date_str):
         with open(TEMP_FILE, 'wb') as f:
             for chunk in response.iter_content(chunk_size=1048576):
                 f.write(chunk)
+        response.close()
 
         print("Processing... ", end='', flush=True)
 
-        with open(TEMP_FILE, 'r') as f:
-            data = json.load(f)
-
+        # Stream-parse the JSON file — never loads full array into memory
         total_volume = 0
-        for record in data:
-            ticker = record.get('report_ticker', '').upper()
-            if any(ticker.startswith(flt) for flt in FILTERS):
-                total_volume += record.get('daily_volume', 0)
+        with open(TEMP_FILE, 'rb') as f:
+            for record in ijson.items(f, 'item'):
+                ticker = record.get('report_ticker', '').upper()
+                if any(ticker.startswith(flt) for flt in FILTERS):
+                    total_volume += record.get('daily_volume', 0)
 
         # Clean up
-        del data
-        gc.collect()
         os.remove(TEMP_FILE)
+        gc.collect()
 
         print(f"Volume: {total_volume:,}")
         return {'date': date_str, 'volume': total_volume}
@@ -135,9 +134,14 @@ def main():
         print(f"Error reading sheet: {e}")
         latest_date = datetime(2025, 12, 19)
 
-    # Check for new dates (up to 10 days to catch up)
+    # Calculate how many days to catch up (dynamic, up to 60 days)
+    days_behind = (datetime.now() - latest_date).days
+    catchup_days = min(days_behind, 60)
+    print(f"Days to catch up: {catchup_days}\n", flush=True)
+
+    # Process each missing date and upload in batches of 5
     new_data = []
-    for i in range(1, 11):
+    for i in range(1, catchup_days + 1):
         check_date = latest_date + timedelta(days=i)
         if check_date > datetime.now():
             break
@@ -146,16 +150,22 @@ def main():
         if result:
             new_data.append(result)
 
-    if not new_data:
+        # Upload in batches of 5 to avoid losing progress
+        if len(new_data) >= 5:
+            print(f"\nUploading batch of {len(new_data)} days...")
+            token = get_access_token()
+            update_google_sheet(token, new_data)
+            new_data = []
+
+    # Upload remaining data
+    if new_data:
+        print(f"\nUploading final {len(new_data)} day(s)...")
+        token = get_access_token()
+        update_google_sheet(token, new_data)
+
+    if not new_data and catchup_days <= 0:
         print("\nNo new data available. Sheet is up to date.")
         return
-
-    print(f"\nFound {len(new_data)} new day(s) of data")
-
-    # Upload to sheet
-    print("\nUpdating Google Sheet...")
-    token = get_access_token()
-    update_google_sheet(token, new_data)
 
     print("\nDaily update complete!")
 
